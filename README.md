@@ -14,11 +14,11 @@ Windows 桌面视频混剪工具：原片切片、人脸检测裁切、横竖屏
 
 ## 成片效果示例
 
-板栗红薯成片，1080×1920 竖屏，约 39 秒。点击下方封面打开原视频：
+板栗红薯成片，约 39 秒。点击下方播放器即可在线观看，无需先下载。在线播放版为 540×960，保留完整时长和声音。
 
-[![板栗红薯成片效果示例](docs/images/finished-example.jpg)](docs/examples/sweet-potato-finished.mp4)
+https://github.com/user-attachments/assets/6b04cb87-c370-4231-a442-0880abd5b886
 
-[打开成片视频（MP4，约 28 MB）](docs/examples/sweet-potato-finished.mp4)
+[下载原始清晰版（1080×1920，MP4，约 28 MB）](docs/examples/sweet-potato-finished.mp4)
 
 示例由项目维护者提供，作为效果展示；不包含原始素材池。
 
