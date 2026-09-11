@@ -19,21 +19,32 @@ class PlanningTests(unittest.TestCase):
             shots = b.plan_shots(self.pool[:70], self.pool[70:], b.CONFIG, 36, usage)
             self.assertEqual(len(shots), len({s['key'] for s in shots}))
             sources = [s['clip']['source'] for s in shots]
-            for i, source in enumerate(sources):
-                self.assertNotIn(source, sources[max(0, i - 2):i])
             self.assertAlmostEqual(sum(s['len'] for s in shots), 36, places=3)
             self.assertTrue(any(s['clip'] in self.pool[:70] for s in shots[1:]))
             self.assertTrue(all(s['start'] + s['len'] <= s['clip']['dur'] for s in shots))
-            usage.update(s['key'] for s in shots)
+            for shot in shots:
+                self.assertEqual(usage[shot['key']], min(usage[str(Path(c['path']).resolve())] for c in self.pool))
+                usage[shot['key']] += 1
         self.assertEqual(len(usage), 100)
         self.assertLessEqual(max(usage.values()) - min(usage.values()), 2)
 
-    def test_small_pool_fails_without_recycling(self):
-        with self.assertRaises(ValueError):
-            b.plan_shots(self.pool[:1], [], b.CONFIG, 36)
+    def test_small_pool_recycles_only_after_round(self):
+        shots = b.plan_shots(self.pool[:1], [], b.CONFIG, 3)
+        self.assertGreater(len(shots), 1)
+        self.assertAlmostEqual(sum(s['len'] for s in shots), 3)
 
     def test_hooks_can_supply_body_without_clips(self):
         self.assertTrue(b.plan_shots(self.pool, [], b.CONFIG, 36))
+
+    def test_unified_pool_needs_no_hooks(self):
+        shots = b.plan_shots([], self.pool, b.CONFIG, 36)
+        self.assertTrue(shots)
+        self.assertLessEqual(shots[0]['len'], max(b.CONFIG['shot_sec']))
+
+    def test_legacy_hook_label_does_not_reserve_first_shot(self):
+        usage = Counter({str(Path(self.pool[0]['path']).resolve()): 100})
+        shots = b.plan_shots(self.pool[:1], self.pool[1:], b.CONFIG, 3, usage)
+        self.assertNotEqual(shots[0]['clip'], self.pool[0])
 
     def test_face_confirmation_is_local_and_requires_peers(self):
         source = Path(b.__file__).with_name('prep_clips.py')

@@ -22,6 +22,9 @@ _gui_config.json
 prep_report.json
 pool_policy_v2.json
 manifest.json
+_geometry_cache.json
 !docs/images/*.png
 !docs/images/*.jpg
 !docs/examples/*.mp4
+
+dist-*/

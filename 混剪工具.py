@@ -103,10 +103,11 @@ class App(tk.Tk):
 
         self.p_raw = tk.StringVar()
         self.p_out = tk.StringVar()
+        self.p_raw.trace_add('write', self._suggest_workdir)
         self._picker(f, "原始视频目录", self.p_raw, 0,
                      "把下载好的完整视频全放这里")
         self._picker(f, "工作目录", self.p_out, 1,
-                     "会在这里生成 hooks/ clips/ review/")
+                     "自动使用原目录名-切片，可手动修改；完成后同步到批量出片")
 
         g = ttk.Labelframe(f, text=" 参数 ", padding=12)
         g.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(12, 6))
@@ -114,14 +115,11 @@ class App(tk.Tk):
         self.seg_min = tk.DoubleVar(value=0.7)
         self.seg_max = tk.DoubleVar(value=1.1)
         self.eye = tk.DoubleVar(value=0.42)
-        self.yellow = tk.DoubleVar(value=0.22)
 
         self._num(g, "切片时长", self.seg_min, 0, 0, 0.3, 3.0, 0.1,
                   second=self.seg_max, unit="秒")
         self._num(g, "眼线位置", self.eye, 1, 0, 0.20, 0.60, 0.02,
                   tip="人脸框内眼睛的相对高度。调小=裁得更狠更安全")
-        self._num(g, "钩子暖色阈值", self.yellow, 2, 0, 0.05, 0.60, 0.02,
-                  tip="果肉色占比超过它就进 hooks。换品要调")
 
         self.no_face = tk.BooleanVar(value=False)
         self.report = tk.BooleanVar(value=False)
@@ -162,10 +160,15 @@ class App(tk.Tk):
         self.c_dir = tk.StringVar(value=str(repaired) if
                                   (repaired / 'pool_policy_v2.json').exists() else '')
         self._picker(f, "工作目录", self.c_dir, 0,
-                     "含 hooks/ clips/ bgm/ 的那个目录")
+                     "含 clips/ 的工作目录；兼容旧 hooks/ 和 review/ 素材")
+
+        self.c_bgm = tk.StringVar()
+        self._picker(f, "背景音乐目录", self.c_bgm, 1,
+                     "每条随机一首，一轮用完再随机；留空使用工作目录/bgm",
+                     button_text="选择音乐文件夹…")
 
         g = ttk.Labelframe(f, text=" 屏幕文案(三行,固定不动) ", padding=12)
-        g.grid(row=1, column=0, columnspan=3, sticky="ew", padx=12, pady=(12, 6))
+        g.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(12, 6))
         self.cap = []
         for i, d in enumerate(["都去吃这个红心蜜柚",
                                "就喜欢这种爆汁的清甜感",
@@ -175,11 +178,11 @@ class App(tk.Tk):
             e.grid(row=i, column=0, sticky="ew", pady=3, ipady=3)
             self.cap.append(v)
         g.columnconfigure(0, weight=1)
-        ttk.Label(g, text="emoji 会显示成方框,建议不用",
+        ttk.Label(g, text="支持粘贴彩色 emoji，如 🍊 😋 ❤️，成片自动渲染",
                   foreground="#7a7f85").grid(row=3, column=0, sticky="w", pady=(6, 0))
 
         g2 = ttk.Labelframe(f, text=" 出片设置 ", padding=12)
-        g2.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=6)
+        g2.grid(row=3, column=0, columnspan=3, sticky="ew", padx=12, pady=6)
 
         self.n = tk.IntVar(value=20)
         self.shot_min = tk.DoubleVar(value=0.7)
@@ -199,15 +202,15 @@ class App(tk.Tk):
         ttk.Label(r, text="画幅").pack(side="left", padx=(0, 12))
         ttk.Radiobutton(r, text="竖屏 1080×1920", variable=self.aspect,
                         value="v").pack(side="left", padx=(0, 16))
-        ttk.Radiobutton(r, text="横屏 1920×1080（顺时针90°）", variable=self.aspect,
+        ttk.Radiobutton(r, text="横屏 1920×1080", variable=self.aspect,
                         value="h").pack(side="left")
-        ttk.Label(r, text="  裁脸后铺满，无黑边",
+        ttk.Label(r, text="  自动旋转、等比缩放铺满",
                   foreground="#7a7f85").pack(side="left", padx=10)
 
         f.columnconfigure(1, weight=1)
 
     # ---------------- 控件辅助 ----------------
-    def _picker(self, parent, label, var, row, tip=""):
+    def _picker(self, parent, label, var, row, tip="", button_text="浏览…"):
         box = tk.Frame(parent, bg=BG)
         box.grid(row=row, column=0, columnspan=3, sticky="ew", padx=12,
                  pady=(12, 0))
@@ -215,7 +218,7 @@ class App(tk.Tk):
         ttk.Label(box, text=label, width=14).grid(row=0, column=0, sticky="w")
         ttk.Entry(box, textvariable=var).grid(row=0, column=1, sticky="ew",
                                               ipady=3)
-        ttk.Button(box, text="浏览…",
+        ttk.Button(box, text=button_text,
                    command=lambda: self._browse(var)).grid(row=0, column=2,
                                                            padx=(10, 0))
         if tip:
@@ -248,6 +251,19 @@ class App(tk.Tk):
                 .grid(row=row, column=c, sticky="w", padx=8)
 
     # ---------------- 运行 ----------------
+    def _suggest_workdir(self, *_):
+        raw = self.p_raw.get().strip()
+        if raw:
+            path = Path(raw)
+            self.p_out.set(str(path.parent / (path.name + '-切片')))
+
+    def _sync_completed_pool(self, code):
+        target = getattr(self, '_pending_pool', None)
+        self._pending_pool = None
+        if code == 0 and target and any((Path(target) / 'clips').glob('*.mp4')):
+            self.c_dir.set(target)
+            self.w(f'已同步批量出片工作目录：{target}\n', 'ok')
+
     def w(self, txt, tag=None):
         self.log.insert("end", txt, tag)
         self.log.see("end")
@@ -268,6 +284,7 @@ class App(tk.Tk):
         cfgp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
                         encoding="utf-8")
         cmd += ["--config", str(cfgp)]
+        self._pending_pool = str(Path(wd).resolve()) if idx == 0 and not self.report.get() else None
 
         self.w("$ " + " ".join(cmd) + "\n\n")
         self.btn.config(state="disabled")
@@ -281,7 +298,7 @@ class App(tk.Tk):
             if not raw or not Path(raw).is_dir():
                 raise ValueError("请选择原始视频目录")
             if not out:
-                out = str(Path(raw).parent)
+                out = str(Path(raw).parent / (Path(raw).name + '-切片'))
                 self.p_out.set(out)
             if not PREP.is_file():
                 raise ValueError(f"找不到 {PREP.name},请和本程序放在同一目录")
@@ -293,7 +310,6 @@ class App(tk.Tk):
             cfg = {
                 "seg_len": [self.seg_min.get(), self.seg_max.get()],
                 "eye_ratio": self.eye.get(),
-                "hook_yellow_min": self.yellow.get(),
                 "scene_detect": self.scene_on.get(),
                 "scene_threshold": self.scene_th.get(),
                 "max_per_scene": self.per_scene.get(),
@@ -304,16 +320,19 @@ class App(tk.Tk):
         d = self.c_dir.get().strip() or self.p_out.get().strip()
         if not d or not Path(d).is_dir():
             raise ValueError("请选择工作目录")
-        for sub in ("hooks", "bgm"):
-            p = Path(d) / sub
-            if not p.is_dir() or not any(p.iterdir()):
-                raise ValueError(f"{sub}/ 不存在或是空的\n\n"
-                                 f"先跑①切片入池,bgm/ 需要你自己放几首音乐")
+        from batch_cut import AUDIO_EXT, VIDEO_EXT, scan, resolve_bgm_directory
+        if not any(scan(Path(d) / sub, VIDEO_EXT) for sub in ('clips', 'hooks', 'review')):
+            raise ValueError("素材池为空，请先跑①切片入池")
+        bgm_dir = resolve_bgm_directory(d, self.c_bgm.get())
+        if not scan(bgm_dir, AUDIO_EXT):
+            raise ValueError(f"音乐目录中没有可用音乐：{bgm_dir}\n"
+                             "请点击“选择音乐文件夹”，选择含 MP3/M4A/WAV/AAC/FLAC 的目录。")
         if not CUT.is_file():
             raise ValueError(f"找不到 {CUT.name},请和本程序放在同一目录")
         w, h = (1080, 1920) if self.aspect.get() == "v" else (1920, 1080)
         cfg = {
             "caption": [v.get() for v in self.cap],
+            "bgm_dir": str(bgm_dir),
             "width": w, "height": h,
             "shot_sec": [self.shot_min.get(), self.shot_max.get()],
             "total_sec": [self.tot_min.get(), self.tot_max.get()],
@@ -346,6 +365,7 @@ class App(tk.Tk):
                     tag = "err" if ("错误" in val or "失败" in val or "×" in val) else None
                     self.w(val, tag)
                 else:
+                    self._sync_completed_pool(val)
                     self.proc = None
                     self.btn.config(state="normal")
                     self.stop.config(state="disabled")

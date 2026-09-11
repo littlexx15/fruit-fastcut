@@ -4,7 +4,7 @@
 prep_clips.py —— 素材批量切片入池
 
 把一批完整视频切成 1 秒左右的片段,自动裁掉眼睛以上的区域(去身份),
-并按画面"钩子强度"自动分流到 hooks/ 和 clips/。
+全部保存到 clips/ 统一素材池，不按文件名或颜色分类。
 
 用法:
     python3 prep_clips.py --src raw --out .            # 全自动
@@ -13,9 +13,7 @@ prep_clips.py —— 素材批量切片入池
 
 目录:
     raw/      放下载好的完整视频
-    hooks/    自动生成 —— 剖面特写,给成片当第0帧
-    clips/    自动生成 —— 其余镜头
-    review/   自动生成 —— 检测存疑的,人工过一眼
+    clips/    自动生成 —— 全部可用镜头
 """
 
 import argparse, functools, json, os, shutil, subprocess, sys
@@ -50,23 +48,11 @@ CFG = {
     "eye_ratio": 0.42,          # 人脸框内眼睛所在的相对高度
     "safe_margin": 0.02,        # 裁切线再往下压一点,防漏
     "min_keep_ratio": 0.30,     # 裁完至少要保留原高的30%,否则丢弃该片
-    "hook_yellow_min": 0.22,    # 暖色(果肉)占比达标 -> 判为钩子
-    "hook_sat_min": 90,         # 饱和度门槛
     "blur_min": 45.0,           # 拉普拉斯方差低于此值判为糊,丢弃
     "crf": 20,
     "preset": "veryfast",
 
-    # --- 按文件名路由 ---
-    # 文件名含 match 里任一关键词时,直接决定去向和是否跑人脸检测。
-    # 文件名只负责分流；“果肉”素材也可能包含试吃人物。
-    # dest: "hooks" | "clips" | "auto"(auto = 按颜色自动判定)
-    "routes": [
-        {"match": ["果肉", "切果", "滴水", "剖面", "特写"],
-         "dest": "hooks", "face": True},
-        {"match": ["咀嚼", "试吃", "吃播", "人物", "口播"],
-         "dest": "clips", "face": True},
-    ],
-    "default_route": {"dest": "auto", "face": True},
+
 }
 # ================================================================
 
@@ -157,21 +143,9 @@ def sh(cmd):
 
 
 def probe(path):
-    out = sh(["ffprobe", "-v", "error", "-select_streams", "v:0",
-              "-show_entries", "stream=width,height",
-              "-show_entries", "format=duration",
-              "-of", "json", str(path)])
-    d = json.loads(out)
-    s = d["streams"][0]
-    return int(s["width"]), int(s["height"]), float(d["format"]["duration"])
-
-
-def route_of(name, cfg):
-    """按文件名决定去向和是否需要人脸检测。"""
-    for r in cfg.get("routes", []):
-        if any(k in name for k in r["match"]):
-            return r
-    return cfg.get("default_route", {"dest": "auto", "face": True})
+    from video_geometry import probe_media
+    info = probe_media(path)
+    return info['width'], info['height'], info['duration']
 
 
 def confirm(raw, H, window, tol, max_gap=0.4):
@@ -290,14 +264,10 @@ def scan_video(path, sample_fps, eye_ratio):
 
 
 def score_frame(bgr):
-    """给一帧打分:暖色占比(果肉) + 清晰度。"""
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-    warm = ((h >= 10) & (h <= 38) & (s >= CFG["hook_sat_min"]) & (v >= 110))
-    yellow_ratio = float(warm.mean())
+    """计算清晰度，不做颜色分类。"""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    return yellow_ratio, blur
+    return 0.0, blur
 
 
 def score_segment(path):
@@ -422,9 +392,9 @@ def main():
     if not args.report and any(any((base / sub).glob('*.mp4'))
                                for sub in ('hooks', 'clips', 'review')):
         sys.exit("错误: 工作目录已有切片。请选新的空工作目录，避免混入旧误裁素材。")
-    hooks_d, clips_d, rev_d = base / "hooks", base / "clips", base / "review"
+    clips_d = base / "clips"
     tmp_d = base / "_tmp"
-    for d in (hooks_d, clips_d, rev_d, tmp_d):
+    for d in (clips_d, tmp_d):
         d.mkdir(parents=True, exist_ok=True)
 
     if FACE_ERR and not args.no_face:
@@ -432,7 +402,7 @@ def main():
 
     print(f"待处理 {len(files)} 条   人脸后端: {BACKEND or '无'}\n")
     log = []
-    n_hook = n_clip = n_rev = n_drop = 0
+    n_clip = n_drop = 0
 
     for f in files:
         try:
@@ -440,7 +410,7 @@ def main():
         except Exception as e:
             print(f"× {f.name}: 读取失败"); continue
 
-        rt = route_of(f.name, CFG)
+        rt = {"dest": "clips", "face": True}
         need_face = rt["face"] and not args.no_face and FACE_ERR is None
 
         cut_y, n_face, n_smp, timeline = (None, 0, 0, [])
@@ -478,16 +448,8 @@ def main():
             yr, bl = score_segment(s)
             if bl < CFG["blur_min"]:
                 s.unlink(); n_drop += 1; continue
-            if rt["dest"] == "hooks":
-                shutil.move(str(s), hooks_d / s.name); n_hook += 1
-            elif rt["dest"] == "clips":
-                shutil.move(str(s), clips_d / s.name); n_clip += 1
-            elif yr >= CFG["hook_yellow_min"]:
-                shutil.move(str(s), hooks_d / s.name); n_hook += 1
-            elif yr >= CFG["hook_yellow_min"] * 0.5:
-                shutil.move(str(s), rev_d / s.name); n_rev += 1
-            else:
-                shutil.move(str(s), clips_d / s.name); n_clip += 1
+            shutil.move(str(s), clips_d / s.name)
+            n_clip += 1
         msg = f"  切出 {len(segs)} 片"
         if skipped:
             msg += f",{skipped} 片因人脸占比过大跳过"
@@ -504,9 +466,7 @@ def main():
             "policy": "segment_confirmed_faces_only"
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         print("=" * 46)
-        print(f"hooks/   {n_hook:4d}  (剖面特写,自动判定)")
-        print(f"clips/   {n_clip:4d}  (常规镜头)")
-        print(f"review/  {n_rev:4d}  (存疑,人工过一眼再分)")
+        print(f"clips/   {n_clip:4d}  (统一素材池，随机选镜)")
         print(f"丢弃     {n_drop:4d}  (模糊)")
         print("\n检测明细见 prep_report.json")
 
