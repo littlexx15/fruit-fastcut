@@ -70,6 +70,10 @@ class App(tk.Tk):
         s.configure("TRadiobutton", background=BG, foreground=FG)
         s.map("TRadiobutton", background=[("active", BG)])
         s.configure("TEntry", insertcolor=FG)
+        s.configure('TCombobox', fieldbackground='#2b2d31', foreground=FG, arrowcolor=FG)
+        s.map('TCombobox', fieldbackground=[('readonly', '#2b2d31')],
+              foreground=[('readonly', FG)], selectbackground=[('readonly', '#2b2d31')],
+              selectforeground=[('readonly', FG)])
         s.configure("TSpinbox", insertcolor=FG, arrowcolor=FG)
 
     def _build(self):
@@ -163,13 +167,29 @@ class App(tk.Tk):
                      "含 clips/ 的工作目录；兼容旧 hooks/ 和 review/ 素材")
 
         self.c_bgm = tk.StringVar()
+        self.bgm_enabled = tk.BooleanVar(value=True)
         self._picker(f, "背景音乐目录", self.c_bgm, 1,
-                     "每条随机一首，一轮用完再随机；留空使用工作目录/bgm",
+                     "可选：留空不配乐；选择目录后每条随机一首",
                      button_text="选择音乐文件夹…")
 
+        self.sfx_enabled = tk.BooleanVar(value=False)
+        self.sfx_path = tk.StringVar()
+        self.sfx_volume = tk.DoubleVar(value=70)
+        self.sfx_gap = tk.DoubleVar(value=2.5)
+        soundbar = tk.Frame(f, bg=BG)
+        soundbar.grid(row=2, column=0, columnspan=3, sticky='ew', padx=12, pady=(8, 0))
+        ttk.Checkbutton(soundbar, text='添加背景音乐', variable=self.bgm_enabled).pack(side='left', padx=(0,12))
+        ttk.Checkbutton(soundbar, text='果肉画面自动加音效', variable=self.sfx_enabled).pack(side='left')
+        ttk.Button(soundbar, text='音效设置…', command=self._sound_settings).pack(side='left', padx=10)
+        ttk.Label(soundbar, text='音效可单独使用', foreground='#7a7f85').pack(side='left')
+
         g = ttk.Labelframe(f, text=" 屏幕文案(三行,固定不动) ", padding=12)
-        g.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(12, 6))
+        g.grid(row=3, column=0, columnspan=3, sticky="ew", padx=12, pady=(12, 6))
         self.cap = []
+        self.caption_font = tk.StringVar(value='')
+        self.batch_caption_enabled = tk.BooleanVar(value=False)
+        self.batch_caption_shuffle = tk.BooleanVar(value=False)
+        self.batch_caption_text = ''
         for i, d in enumerate(["都去吃这个红心蜜柚",
                                "就喜欢这种爆汁的清甜感",
                                "越吃越上头巨好吃"]):
@@ -178,11 +198,20 @@ class App(tk.Tk):
             e.grid(row=i, column=0, sticky="ew", pady=3, ipady=3)
             self.cap.append(v)
         g.columnconfigure(0, weight=1)
-        ttk.Label(g, text="支持粘贴彩色 emoji，如 🍊 😋 ❤️，成片自动渲染",
-                  foreground="#7a7f85").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        fontbar = ttk.Frame(g)
+        fontbar.grid(row=3, column=0, sticky='ew', pady=(6, 0))
+        ttk.Label(fontbar, text="支持粘贴彩色 emoji，如 🍊 😋 ❤️",
+                  foreground="#7a7f85").pack(side='left')
+        ttk.Button(fontbar, text='选择字体 / 预览…', command=self._font_settings).pack(side='right')
+        batchbar = ttk.Frame(g)
+        batchbar.grid(row=4,column=0,sticky='ew',pady=(4,0))
+        ttk.Checkbutton(batchbar,text='每条视频使用不同文案',variable=self.batch_caption_enabled).pack(side='left')
+        ttk.Button(batchbar,text='粘贴批量文案…',command=self._batch_caption_settings).pack(side='left',padx=10)
+        self.caption_count = tk.StringVar(value='已保存 0 组')
+        ttk.Label(batchbar,textvariable=self.caption_count,foreground='#9aa0a6').pack(side='left')
 
         g2 = ttk.Labelframe(f, text=" 出片设置 ", padding=12)
-        g2.grid(row=3, column=0, columnspan=3, sticky="ew", padx=12, pady=6)
+        g2.grid(row=4, column=0, columnspan=3, sticky="ew", padx=12, pady=6)
 
         self.n = tk.IntVar(value=20)
         self.shot_min = tk.DoubleVar(value=0.7)
@@ -210,6 +239,134 @@ class App(tk.Tk):
         f.columnconfigure(1, weight=1)
 
     # ---------------- 控件辅助 ----------------
+    def _batch_caption_settings(self):
+        from caption_pool import parse_captions
+        if getattr(self,'_batch_window',None) and self._batch_window.winfo_exists():
+            self._batch_window.lift();return
+        win=self._batch_window=tk.Toplevel(self)
+        win.title('批量文案');win.transient(self);win.configure(bg=BG)
+        win.geometry('720x620');win.minsize(560,400)
+        box=ttk.Frame(win,padding=14);box.pack(fill='both',expand=True)
+        ttk.Label(box,text='每组1～3行，组间空一行；整组重复的文案自动去重。').pack(anchor='w')
+        frame=ttk.Frame(box);frame.pack(fill='both',expand=True,pady=10)
+        editor=tk.Text(frame,wrap='word',undo=True,bg='#2b2d31',fg=FG,insertbackground=FG,font=('',11))
+        scroll=ttk.Scrollbar(frame,command=editor.yview);editor.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right',fill='y');editor.pack(side='left',fill='both',expand=True)
+        editor.insert('1.0',self.batch_caption_text)
+        count=tk.StringVar();ttk.Label(box,textvariable=count,wraplength=660).pack(anchor='w')
+        shuffled=tk.BooleanVar(value=self.batch_caption_shuffle.get())
+        ttk.Checkbutton(box,text='打乱文案顺序（默认按粘贴顺序分配，不重复）',variable=shuffled).pack(anchor='w',pady=8)
+        def update(*_):
+            try:count.set(f'已识别 {len(parse_captions(editor.get("1.0","end-1c")))} 组不同文案')
+            except ValueError as exc:count.set(str(exc))
+            editor.edit_modified(False)
+        editor.bind('<<Modified>>',lambda e: update() if editor.edit_modified() else None)
+        def save(match_count=False):
+            text=editor.get('1.0','end-1c')
+            try:
+                groups=parse_captions(text)
+                if not groups:raise ValueError('请先粘贴文案，每组之间空一行')
+            except ValueError as exc:messagebox.showwarning('检查文案',str(exc),parent=win);return
+            self.batch_caption_text=text;self.batch_caption_enabled.set(True)
+            self.batch_caption_shuffle.set(shuffled.get());self.caption_count.set(f'已保存 {len(groups)} 组')
+            if match_count:self.n.set(len(groups))
+            win.destroy()
+        buttons=ttk.Frame(box);buttons.pack(fill='x')
+        ttk.Button(buttons,text='保存，并按组数生成',command=lambda:save(True)).pack(side='right')
+        ttk.Button(buttons,text='保存文案',command=save).pack(side='right',padx=8)
+        update()
+
+    def _font_settings(self):
+        from font_selection import installed_fonts, resolve_font
+        from batch_cut import FONT
+        from caption_render import render_caption
+        from PIL import Image, ImageTk, ImageOps
+        import tempfile
+        if getattr(self, '_font_window', None) and self._font_window.winfo_exists():
+            self._font_window.lift()
+            return
+        win = self._font_window = tk.Toplevel(self)
+        win.title('选择字幕字体')
+        win.configure(bg=BG);win.transient(self);win.resizable(False, False)
+        box = ttk.Frame(win, padding=16);box.pack(fill='both', expand=True)
+        fonts = installed_fonts()
+        selected = tk.StringVar(value=self.caption_font.get() or FONT or '')
+        choice = tk.StringVar(value=next((k for k,v in fonts.items()
+                                        if os.path.normcase(v) == os.path.normcase(selected.get())), '自选字体'))
+        ttk.Label(box, text='已安装的中文字体').grid(row=0,column=0,sticky='w')
+        combo = ttk.Combobox(box, textvariable=choice, values=list(fonts), state='readonly', width=55)
+        combo.grid(row=1,column=0,sticky='ew',pady=8)
+        ttk.Label(box,textvariable=selected,wraplength=620,foreground='#9aa0a6').grid(row=2,column=0,columnspan=2,sticky='w')
+        ttk.Label(box,text='当前文案预览（画面上方区域，布局与成片一致）').grid(row=3,column=0,columnspan=2,sticky='w',pady=(12,4))
+        preview = ttk.Label(box);preview.grid(row=4,column=0,columnspan=2)
+        error = tk.StringVar()
+        ttk.Label(box,textvariable=error,foreground='#ff6b6b',wraplength=620).grid(row=5,column=0,columnspan=2,sticky='w')
+        def redraw(*_):
+            try:
+                path=resolve_font(selected.get(),FONT)
+                width,height=(1080,1920) if self.aspect.get()=='v' else (1920,1080)
+                with tempfile.TemporaryDirectory() as td:
+                    file=Path(td)/'preview.png'
+                    lines=[v.get().strip() for v in self.cap if v.get().strip()]
+                    if self.batch_caption_enabled.get():
+                        from caption_pool import parse_captions
+                        groups=parse_captions(self.batch_caption_text)
+                        if groups:lines=groups[0]
+                    render_caption(lines,width,height,58,path,'white',file)
+                    with Image.open(file) as rendered:
+                        crop=rendered.crop((0,0,width,round(height*.25)))
+                        background=Image.new('RGBA',crop.size,'#45494f');background.alpha_composite(crop)
+                        im=ImageOps.contain(background.convert('RGB'),(640,240))
+                        preview.image=ImageTk.PhotoImage(im)
+                        preview.configure(image=preview.image)
+                error.set('')
+            except (ValueError,OSError) as exc:error.set(str(exc))
+        def changed(*_):
+            if choice.get() in fonts:selected.set(fonts[choice.get()]);redraw()
+        combo.bind('<<ComboboxSelected>>',changed)
+        def browse():
+            path=filedialog.askopenfilename(parent=win,title='选择中文字体文件',filetypes=[('字体文件','*.ttf *.otf *.ttc')])
+            if path:selected.set(path);choice.set('自选字体');redraw()
+        ttk.Button(box,text='选择字体文件…',command=browse).grid(row=1,column=1,padx=(10,0))
+        def apply():
+            try:self.caption_font.set(resolve_font(selected.get(),FONT))
+            except ValueError as exc:error.set(str(exc));return
+            win.destroy()
+        ttk.Button(box,text='应用字体',command=apply).grid(row=6,column=1,pady=(12,0))
+        ttk.Label(box,text='中文字体影响文案；彩色 emoji 仍单独渲染。',foreground='#9aa0a6').grid(row=6,column=0,sticky='w')
+        redraw()
+
+    def _sound_settings(self):
+        if getattr(self, '_sound_window', None) and self._sound_window.winfo_exists():
+            self._sound_window.lift()
+            return
+        win = self._sound_window = tk.Toplevel(self)
+        win.title('果肉音效设置')
+        win.configure(bg=BG)
+        win.transient(self)
+        win.resizable(True, False)
+        box = ttk.Frame(win, padding=18)
+        box.pack(fill='both', expand=True)
+        box.columnconfigure(0, weight=1)
+        ttk.Checkbutton(box, text='启用：果肉画面自动添加音效', variable=self.sfx_enabled).grid(row=0, column=0, sticky='w')
+        ttk.Entry(box, textvariable=self.sfx_path, width=65).grid(row=1, column=0, columnspan=3, sticky='ew', pady=12)
+        def select_file():
+            path = filedialog.askopenfilename(parent=win, title='选择吃水果音效',
+                filetypes=[('音频', '*.wav *.mp3 *.m4a *.aac *.flac *.ogg')])
+            if path: self.sfx_path.set(path)
+        def select_folder():
+            path = filedialog.askdirectory(parent=win, title='选择音效文件夹')
+            if path: self.sfx_path.set(path)
+        ttk.Button(box, text='选择音效文件…', command=select_file).grid(row=2, column=0, sticky='w')
+        ttk.Button(box, text='选择音效文件夹…', command=select_folder).grid(row=2, column=1, sticky='w')
+        settings = ttk.Frame(box)
+        settings.grid(row=3, column=0, columnspan=3, sticky='ew', pady=12)
+        self._num(settings, '音效音量', self.sfx_volume, 0, 0, 0, 200, 5, unit='%')
+        self._num(settings, '最短触发间隔', self.sfx_gap, 1, 0, 0, 60, .5, unit='秒')
+        ttk.Label(box, text='文件夹内随机选音效；从声音开头播放，最长不超过当前镜头。\n识别可能漏选或误选；匹配果肉展示，不识别真实咬下动作。',
+                  foreground='#9aa0a6').grid(row=4, column=0, columnspan=3, sticky='w')
+        ttk.Button(box, text='完成', command=win.destroy).grid(row=5, column=2, pady=(12, 0))
+
     def _picker(self, parent, label, var, row, tip="", button_text="浏览…"):
         box = tk.Frame(parent, bg=BG)
         box.grid(row=row, column=0, columnspan=3, sticky="ew", padx=12,
@@ -275,7 +432,7 @@ class App(tk.Tk):
         idx = self.nb.index(self.nb.select())
         try:
             cmd, cfg, wd = self._build_cmd(idx)
-        except ValueError as e:
+        except (ValueError, tk.TclError) as e:
             messagebox.showwarning("检查一下", str(e))
             return
 
@@ -323,20 +480,36 @@ class App(tk.Tk):
         from batch_cut import AUDIO_EXT, VIDEO_EXT, scan, resolve_bgm_directory
         if not any(scan(Path(d) / sub, VIDEO_EXT) for sub in ('clips', 'hooks', 'review')):
             raise ValueError("素材池为空，请先跑①切片入池")
-        bgm_dir = resolve_bgm_directory(d, self.c_bgm.get())
-        if not scan(bgm_dir, AUDIO_EXT):
+        bgm_dir = resolve_bgm_directory(d, self.c_bgm.get()) if self.bgm_enabled.get() and self.c_bgm.get().strip() else None
+        if bgm_dir is not None and not scan(bgm_dir, AUDIO_EXT):
             raise ValueError(f"音乐目录中没有可用音乐：{bgm_dir}\n"
                              "请点击“选择音乐文件夹”，选择含 MP3/M4A/WAV/AAC/FLAC 的目录。")
         if not CUT.is_file():
             raise ValueError(f"找不到 {CUT.name},请和本程序放在同一目录")
         w, h = (1080, 1920) if self.aspect.get() == "v" else (1920, 1080)
+        sfx = dict(sfx_enabled=self.sfx_enabled.get(), sfx_path=self.sfx_path.get().strip(),
+                   sfx_volume=self.sfx_volume.get() / 100, sfx_gap=self.sfx_gap.get())
+        if sfx['sfx_enabled']:
+            from flesh_sfx import audio_files, validate_settings, model_directory
+            audio_files(sfx['sfx_path'])
+            validate_settings(sfx)
+            if not (model_directory() / 'vision.onnx').is_file():
+                raise ValueError('缺少果肉识别模型，请保留程序旁的 models 文件夹')
         cfg = {
+            **sfx,
+            "batch_caption_enabled": self.batch_caption_enabled.get(),
+            "batch_caption_text": self.batch_caption_text,
+            "batch_caption_shuffle": self.batch_caption_shuffle.get(),
+            "font_path": self.caption_font.get(),
             "caption": [v.get() for v in self.cap],
-            "bgm_dir": str(bgm_dir),
+            "bgm_dir": str(bgm_dir) if bgm_dir else '',
+            "bgm_enabled": self.bgm_enabled.get(),
             "width": w, "height": h,
             "shot_sec": [self.shot_min.get(), self.shot_max.get()],
             "total_sec": [self.tot_min.get(), self.tot_max.get()],
         }
+        from caption_pool import plan_captions
+        plan_captions(cfg, self.n.get())
         cmd = worker_command(CUT) + ["--dir", d, "--n", str(self.n.get())]
         return cmd, cfg, d
 

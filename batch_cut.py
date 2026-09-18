@@ -14,7 +14,7 @@ batch_cut.py —— 短视频批量混剪生产脚本
 参数在下面 CONFIG 里改。
 """
 
-import argparse, functools, json, os, random, subprocess, sys, tempfile
+import argparse, functools, json, math, os, random, subprocess, sys, tempfile
 from collections import Counter
 from video_geometry import inspect_geometry, geometry_filter
 from pathlib import Path
@@ -45,6 +45,7 @@ CONFIG = {
         "越吃越上头巨好吃🥰",
     ],
     "font_size": 58,
+    "font_path": "",           # 留空使用默认中文字体；支持 TTF/OTF/TTC
     "font_color": "white",
     "font_border": 2,
     "cap_x": 32,
@@ -52,9 +53,14 @@ CONFIG = {
     "line_spacing": 10,
 
     # --- 音频 ---
-    "bgm_dir": "",              # 空值沿用工作目录/bgm；也可指定独立音乐目录
+    "bgm_dir": "",              # 留空不添加背景音乐
+    "bgm_enabled": True,
     "bgm_volume": 1.0,
     "bgm_fadeout": 1.5,
+    "sfx_enabled": False,
+    "sfx_path": "",
+    "sfx_volume": 0.7,
+    "sfx_gap": 2.5,
 
     # --- 去重扰动(降低同质化判定风险) ---
     "jitter": {
@@ -239,7 +245,8 @@ def plan_shots(hooks, clips, cfg, total, usage=None):
     return shots
 
 
-def build_variant(vid, hooks, clips, bgms, cfg, outdir, tmpdir, usage=None, bgm_choice=None):
+def build_variant(vid, hooks, clips, bgms, cfg, outdir, tmpdir, usage=None, bgm_choice=None,
+                  sfx_context=None):
     W, H, FPS = cfg["width"], cfg["height"], cfg["fps"]
     jit = cfg["jitter"]
 
@@ -251,6 +258,16 @@ def build_variant(vid, hooks, clips, bgms, cfg, outdir, tmpdir, usage=None, bgm_
         spd = 1.0
     shots = plan_shots(hooks, clips, cfg, total * spd, usage)
     hook = shots[0]['clip']
+    sfx_events, flesh_results = [], []
+    if cfg.get('sfx_enabled'):
+        if sfx_context is None:
+            raise ValueError('果肉音效尚未初始化，不能静默跳过识别')
+        from flesh_sfx import plan_events
+        for shot in shots:
+            shot['frames'] = max(1, math.ceil(shot['len'] * FPS - 1e-8))
+        print(f'[{vid}] 检查 {len(shots)} 个镜头的果肉音效（已识别素材复用缓存）…')
+        sfx_events, flesh_results = plan_events(shots, spd, FPS, *sfx_context, cfg)
+        print(f'  果肉命中 {sum(r["match"] for r in flesh_results)} 镜，添加 {len(sfx_events)} 次音效')
 
     # ---- 2. 拼 filter_complex ----
     inputs, filters, labels = [], [], []
@@ -258,12 +275,15 @@ def build_variant(vid, hooks, clips, bgms, cfg, outdir, tmpdir, usage=None, bgm_
     for n, s in enumerate(shots):
         c = s["clip"]
         st, L = s['start'], s['len']
-        real_total += L
+        real_total += s.get('frames', L * FPS) / FPS
         inputs += ["-ss", f"{st:.3f}", "-t", f"{L:.3f}", "-i", c["path"]]
 
         fit = geometry_filter(c, W, H)
         f = (f"[{n}:v]{fit},"
              f"fps={FPS},format=yuv420p,setsar=1,setpts=PTS-STARTPTS[v{n}]")
+        if 'frames' in s:
+            f = (f'[{n}:v]{fit},fps={FPS},tpad=stop_mode=clone:stop_duration=0.1,'
+                 f'trim=end_frame={s["frames"]},format=yuv420p,setsar=1,setpts=PTS-STARTPTS[v{n}]')
         filters.append(f)
         labels.append(f"[v{n}]")
 
@@ -281,14 +301,16 @@ def build_variant(vid, hooks, clips, bgms, cfg, outdir, tmpdir, usage=None, bgm_
         chain = "[col]"
 
     if abs(spd - 1.0) > 0.005:
-        filters.append(f"{chain}setpts={1/spd:.4f}*PTS[spd]")
+        filters.append(f"{chain}setpts={1/spd:.10f}*PTS[spd]")
         chain = "[spd]"
 
     # ---- 3. 中文和彩色 emoji 合成透明字幕层 ----
     from caption_render import render_caption
     lines = [str(line).strip() for line in cfg['caption'] if str(line).strip()]
     caption_image = Path(tmpdir) / 'caption.png'
-    render_caption(lines, W, H, cfg['font_size'], FONT, cfg['font_color'], caption_image)
+    from font_selection import resolve_font
+    font_path = resolve_font(cfg.get('font_path', ''), FONT)
+    render_caption(lines, W, H, cfg['font_size'], font_path, cfg['font_color'], caption_image)
     caption_index = len(shots)
     inputs += ['-loop', '1', '-framerate', str(FPS), '-i', str(caption_image)]
     filters.append(f'{chain}[{caption_index}:v]overlay=0:0:shortest=1[txt]')
@@ -296,14 +318,21 @@ def build_variant(vid, hooks, clips, bgms, cfg, outdir, tmpdir, usage=None, bgm_
     vlen = real_total / spd
 
     # ---- 4. BGM ----
-    bgm = Path(bgm_choice) if bgm_choice is not None else random.choice(bgms)
+    bgm = (Path(bgm_choice) if bgm_choice is not None else random.choice(bgms) if bgms else None) if cfg.get('bgm_enabled', True) else None
     ai = len(shots) + 1
-    inputs += ["-stream_loop", "-1", "-i", str(bgm)]
+    if bgm is not None:
+        inputs += ["-stream_loop", "-1", "-i", str(bgm)]
+    else:
+        inputs += ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']
 
     fo = max(0.0, vlen - cfg["bgm_fadeout"])
-    filters.append(f"[{ai}:a]atrim=0:{vlen:.3f},asetpts=PTS-STARTPTS,"
+    bgm_label = '[abgm]' if sfx_events else '[aout]'
+    filters.append(f"[{ai}:a]atrim=0:{vlen:.6f},asetpts=PTS-STARTPTS,"
                    f"volume={cfg['bgm_volume']},"
-                   f"afade=t=out:st={fo:.2f}:d={cfg['bgm_fadeout']}[aout]")
+                   f"afade=t=out:st={fo:.2f}:d={cfg['bgm_fadeout']}{bgm_label}")
+    if sfx_events:
+        from flesh_sfx import add_audio_filters
+        add_audio_filters(inputs, filters, sfx_events, ai + 1, bgm_label, vlen, cfg['sfx_volume'])
 
     out = Path(outdir) / f"v{vid:03d}.mp4"
     cmd = (["ffmpeg", "-y", "-v", "error"] + inputs +
@@ -328,9 +357,13 @@ def build_variant(vid, hooks, clips, bgms, cfg, outdir, tmpdir, usage=None, bgm_
         "shots": len(shots),
         "duration": round(vlen, 2),
         "hook": Path(hook["path"]).name,
-        "bgm": bgm.name,
+        "bgm": bgm.name if bgm else None,
         "mirror": chain != "[cat]",
         "speed": round(spd, 3),
+        "font_path": font_path,
+        "caption": lines,
+        "sfx_events": sfx_events,
+        "flesh_results": flesh_results,
         "unique_clips": len({s['key'] for s in shots}),
         "source_count": len({s['clip'].get('source', s['key']) for s in shots}),
         "timeline": [dict(file=s['clip']['path'], source=s['clip'].get('source'),
@@ -347,7 +380,8 @@ def main():
     ap.add_argument("--out", default="out", help="输出目录")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--config", help="JSON 文件,覆盖 CONFIG 里的任意项")
-    ap.add_argument("--bgm-dir", help="独立背景音乐目录；省略则使用配置或工作目录/bgm")
+    ap.add_argument("--bgm-dir", help="背景音乐目录；未配置或留空时不配乐")
+    ap.add_argument('--no-bgm', action='store_true', help='不添加背景音乐，仍可使用果肉音效')
     args = ap.parse_args()
 
     if args.config and Path(args.config).is_file():
@@ -355,6 +389,8 @@ def main():
 
     if args.seed is not None:
         random.seed(args.seed)
+    from caption_pool import plan_captions
+    caption_plan = plan_captions(CONFIG, args.n)
 
     base = Path(args.dir)
     # 旧池已丢失产品画面，不能继续把旧切片放大当作修复。
@@ -363,28 +399,42 @@ def main():
                  "请用原始视频在新的工作目录重新执行①切片入池，再出片。")
     hooks_f = scan(base / "hooks", VIDEO_EXT)
     clips_f = scan(base / "clips", VIDEO_EXT) + scan(base / "review", VIDEO_EXT)
-    bgm_dir = resolve_bgm_directory(base, args.bgm_dir if args.bgm_dir is not None
-                                    else CONFIG.get('bgm_dir', ''))
-    bgms = scan(bgm_dir, AUDIO_EXT)
+    if args.no_bgm:
+        CONFIG['bgm_enabled'] = False
+    selected_bgm = args.bgm_dir if args.bgm_dir is not None else CONFIG.get('bgm_dir', '')
+    bgm_dir = resolve_bgm_directory(base, selected_bgm) if CONFIG.get('bgm_enabled', True) and str(selected_bgm).strip() else None
+    bgms = scan(bgm_dir, AUDIO_EXT) if bgm_dir is not None else []
 
     if not hooks_f and not clips_f:
         sys.exit("错误: 素材池为空，请先切片入池。")
-    if not bgms:
+    if bgm_dir is not None and not bgms:
         sys.exit(f"错误: 音乐目录 {bgm_dir} 中没有 MP3、M4A、WAV、AAC 或 FLAC 文件。")
 
-    if not FONT:
-        sys.exit("错误: 系统里没找到中文字体。\n"
-                 "  Windows 请确认 C:\\Windows\\Fonts\\msyh.ttc 存在;\n"
-                 "  Linux 可执行 apt install fonts-noto-cjk")
-    print(f"字体: {FONT}")
+    from font_selection import resolve_font
+    CONFIG['font_path'] = resolve_font(CONFIG.get('font_path', ''), FONT)
+    print(f"字体: {CONFIG['font_path']}")
     print(f"扫描素材: 统一池 {len(hooks_f) + len(clips_f)} / bgm {len(bgms)}")
-    print(f"音乐目录: {bgm_dir}；每条随机一首，一轮用完再重新随机。")
+    print(f"音乐目录: {bgm_dir}；每条随机一首，一轮用完再重新随机。" if bgms else '背景音乐：不添加（果肉音效可单独使用）。')
     min_dur = min(CONFIG["shot_sec"]) * 0.75
     hooks = build_clip_index(hooks_f, min_dur)
     clips = build_clip_index(clips_f, min_dur)
     if not hooks and not clips:
         sys.exit(f"错误: 有效素材不足(需时长≥{min_dur:.2f}秒)。"
                  f"\n把'每镜时长'调小,或把'切片时长'调大重新切片。")
+
+    sfx_context = None
+    if CONFIG.get('sfx_enabled'):
+        from flesh_sfx import audio_files, validate_settings, FleshScorer
+        validate_settings(CONFIG)
+        sounds = []
+        for path in audio_files(CONFIG.get('sfx_path', '')):
+            d = duration(path)
+            if not math.isfinite(d) or d <= 0:
+                raise ValueError(f'无法读取音效，请检查文件：{path}')
+            sounds.append(dict(path=path, duration=d))
+        scorer = FleshScorer(base / '_flesh_cache.json')
+        sfx_context = (scorer, sounds)
+        print(f'果肉音效：本地 SigLIP Base，{len(sounds)} 个音效；间隔 {CONFIG["sfx_gap"]} 秒。')
 
     outdir = base / args.out
     outdir.mkdir(exist_ok=True)
@@ -393,16 +443,17 @@ def main():
 
     manifest = []
     usage = Counter()
-    music_plan = plan_music(bgms, args.n)
+    music_plan = plan_music(bgms, args.n) if bgms else [None] * args.n
     with tempfile.TemporaryDirectory() as tmp:
         for i in range(1, args.n + 1):
             try:
-                info = build_variant(i, hooks, clips, bgms, CONFIG, outdir, tmp, usage,
-                                     music_plan[i - 1])
+                variant_cfg = dict(CONFIG, caption=caption_plan[i-1])
+                info = build_variant(i, hooks, clips, bgms, variant_cfg, outdir, tmp, usage,
+                                     music_plan[i - 1], sfx_context)
                 manifest.append(info)
                 print(f"[{i}/{args.n}] {info['file']}  "
                       f"{info['duration']}s / {info['shots']}镜  "
-                      f"首镜={info['hook']}  音乐={info['bgm']}")
+                      f"首镜={info['hook']}  音乐={info['bgm'] or '无'}")
             except Exception as e:
                 print(f"[{i}/{args.n}] 失败: {e}")
 
@@ -410,6 +461,10 @@ def main():
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n完成 {len(manifest)}/{args.n} 条 -> {outdir}/")
     print("每条附带 _cover.jpg 首帧封面,manifest.json 记录了各条的参数组合。")
+    if sfx_context:
+        print(f'果肉识别：新增 {scorer.misses} 帧，复用缓存 {scorer.hits} 帧。')
+    if len(manifest) != args.n:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -28,3 +28,11 @@ _geometry_cache.json
 !docs/examples/*.mp4
 
 dist-*/
+
+models/
+
+_flesh_cache.json
+
+build-sfx/
+
+build-*/

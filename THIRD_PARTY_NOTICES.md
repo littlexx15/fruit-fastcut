@@ -8,3 +8,6 @@
 - **FFmpeg**: required external program, **not bundled** in this release. Install separately from https://ffmpeg.org/download.html or your package manager. Its licensing depends on the selected build.
 
 The repository includes one finished demo video explicitly selected by the project maintainer, its thumbnail, and screenshots of the application. No raw video pools, separate audio tracks, fonts, account credentials, or local editing reports are included. The example is not covered by third-party software licenses listed above.
+
+- **SigLIP Base**: google/siglip-base-patch16-224, Apache-2.0. Source: https://huggingface.co/google/siglip-base-patch16-224 . The optional model bundle contains a converted FP32 visual encoder and precomputed text embeddings. License: licenses/SigLIP-Apache-2.0.txt.
+- **ONNX Runtime**: Microsoft, MIT. License: licenses/ONNXRuntime-LICENSE.txt. Source: https://github.com/microsoft/onnxruntime .
