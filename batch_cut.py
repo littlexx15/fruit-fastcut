@@ -343,17 +343,11 @@ def build_variant(vid, hooks, clips, bgms, cfg, outdir, tmpdir, usage=None, bgm_
             "-movflags", "+faststart", "-t", f"{vlen:.3f}", str(out)])
     sh(cmd)
 
-    # ---- 5. 同步导出封面(首帧) ----
-    cover = Path(outdir) / f"v{vid:03d}_cover.jpg"
-    sh(["ffmpeg", "-y", "-v", "error", "-i", str(out),
-        "-frames:v", "1", "-q:v", "2", str(cover)])
-
     if usage is not None:
         usage.update(s['key'] for s in shots)
 
     return {
         "file": out.name,
-        "cover": cover.name,
         "shots": len(shots),
         "duration": round(vlen, 2),
         "hook": Path(hook["path"]).name,
@@ -460,7 +454,7 @@ def main():
     (outdir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n完成 {len(manifest)}/{args.n} 条 -> {outdir}/")
-    print("每条附带 _cover.jpg 首帧封面,manifest.json 记录了各条的参数组合。")
+    print("视频已导出，manifest.json 记录了各条的参数组合。")
     if sfx_context:
         print(f'果肉识别：新增 {scorer.misses} 帧，复用缓存 {scorer.hits} 帧。')
     if len(manifest) != args.n:

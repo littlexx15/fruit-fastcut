@@ -2,7 +2,11 @@
 
 Windows 桌面工具：原片切片、人脸检测裁切、横竖屏适配、批量混剪、文案与声音合成。
 
-## 第三版 v1.2.0
+## 最新版 v1.2.1
+
+取消出片时的首帧封面导出，不再生成 `_cover.jpg`；保留视频和 `manifest.json` 镜头清单。
+
+### v1.2.0 已有功能
 
 | 新功能 | 使用方式 |
 |---|---|
@@ -11,7 +15,7 @@ Windows 桌面工具：原片切片、人脸检测裁切、横竖屏适配、批
 | 每条视频不同文案 | 一次粘贴多组文案，顺序或随机分配，去重且不自动重复，可按文案组数设置生成条数 |
 | 字体选择与预览 | 选择系统中文字体或 TTF/OTF/TTC 文件，预览后应用；彩色 emoji 继续正常渲染 |
 
-[下载 Windows 运行包与源码](https://github.com/littlexx15/fruit-fastcut/releases/tag/v1.2.0)
+[下载 Windows 运行包与源码](https://github.com/littlexx15/fruit-fastcut/releases/tag/v1.2.1)
 
 ## 成片效果示例
 
@@ -57,7 +61,7 @@ https://github.com/user-attachments/assets/6b04cb87-c370-4231-a442-0880abd5b886
 2. 保留旁边的 `_internal`、`models` 文件夹；Windows 包已附带离线果肉识别模型。
 3. 单独安装 FFmpeg，让 `ffmpeg`、`ffprobe` 可从命令行运行。例如使用 `winget install Gyan.FFmpeg`，安装后重启软件。运行包不附带 FFmpeg。
 4. 选择原始视频目录，工作目录自动填写为“原目录名-切片”。切片成功后自动同步至批量出片页。
-5. 按需设置背景音乐、果肉音效、文案、字体、条数、时长与画幅，点击开始。成片、封面和清单保存在工作目录 `out/`。
+5. 按需设置背景音乐、果肉音效、文案、字体、条数、时长与画幅，点击开始。成片和清单保存在工作目录 `out/`，不生成封面图片。
 
 ## 果肉画面自动音效
 
